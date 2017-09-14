@@ -1,0 +1,12 @@
+[Service]
+ExecStart=/usr/bin/python '/home/pi/PiStation 2/PiStation 2.py'
+WorkingDirectory='/home/pi/PiStation 2/'
+Restart=always
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=pistation2
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
