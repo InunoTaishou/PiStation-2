@@ -1,3 +1,3 @@
 psutils
 LED connected to one of the GPIO pins
-Fan connected to one of the GPIO pins
+Fan connected to, at least, one of the GPIO pins
