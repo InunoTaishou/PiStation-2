@@ -35,6 +35,8 @@ class PrintQueue:
     def __init__(self):
         self.queue = Queue()
         self.__printing = True
+        self.__stop_event = threading.Event()
+
         threading.Thread(name='PrintQueue', target=self.__printer).start()
 
     def queue_add(self, text):
@@ -53,7 +55,7 @@ class PrintQueue:
             except Empty:
                 pass
 
-            sleep(0.1)
+            self.__stop_event.wait(0.1)
         return
 
 
@@ -61,7 +63,14 @@ class LogQueue:
     def __init__(self):
         self.queue = Queue()
         self.__logging = True
-        self.__log_file = open(os.path.dirname(os.path.realpath(__file__)) + '/PiStation 2.log', 'a')
+        self.__stop_event = threading.Event()
+
+        try:
+            self.__log_file = open(os.path.dirname(os.path.realpath(__file__)) + '/PiStation 2.log', 'a')
+        except:
+            with open('/home/pi/PiStation 2 Error.txt', 'a') as txt:
+                txt.write(sys.exc_info()[0])
+
         threading.Thread(name='LogQueue', target=self.__logger).start()
 
     def queue_add(self, text):
@@ -69,19 +78,21 @@ class LogQueue:
 
     def close(self):
         self.queue.join()
-        self.__logging = False
         self.__log_file.close()
+        self.__logging = False
 
     def __logger(self):
         while self.__logging:
             try:
                 text = self.queue.get()
                 self.__log_file.write(text)
+                self.__log_file.flush()
+                os.fsync(self.__log_file.fileno())
                 self.queue.task_done()
             except Empty:
                 pass
 
-            sleep(0.1)
+            self.__stop_event.wait(0.1)
         return
 
 
@@ -124,9 +135,10 @@ class RsyncMonitor:
                 if self.printer:
                     self.printer.queue_add(log_text)
                 if self.logger:
-                    self.logger.queue_add(log_text + '\n')
+                    self.logger.queue_add(log_text + '\r\n')
             else:
                 print(log_text)
+
             raise ValueError
 
         if not (isinstance(delay, int) or isinstance(delay, float)):
@@ -135,7 +147,7 @@ class RsyncMonitor:
                 if self.printer:
                     self.printer.queue_add(log_text)
                 if self.logger:
-                    self.logger.queue_add(log_text + '\n')
+                    self.logger.queue_add(log_text + '\r\n')
             else:
                 print(log_text)
             raise ValueError
@@ -173,6 +185,7 @@ class RsyncMonitor:
     # Monitor function, main loop for this class
     def monitor(self, stop_event):
         copy_timer = time()
+
         try:
             while not stop_event.is_set():
                 # If rsync is running (copying)
@@ -186,14 +199,13 @@ class RsyncMonitor:
                         self.__flash_stop = threading.Event()
                         self.__flashing = threading.Thread(target=self.__flash,
                                                            args=(self.__flash_stop, self.led_controller, self.delay))
-                        self.__flashing.daemon = True
                         self.__flashing.start()
 
                         if self.printer or self.logger:
                             log_string = datetime.strftime(datetime.now(), '[%Y-%m-%d] [%H:%M:%S]') + ' Copying started'
 
                             if self.logger:
-                                self.logger.queue_add(log_string + '\n')
+                                self.logger.queue_add(log_string + '\r\n')
 
                             if self.printer:
                                 self.printer.queue_add(log_string)
@@ -210,7 +222,7 @@ class RsyncMonitor:
                                      ' Copying ended: ' + self.__timer_to_time(copy_timer)
 
                         if self.logger:
-                            self.logger.queue_add(log_string + '\n')
+                            self.logger.queue_add(log_string + '\r\n')
 
                         if self.printer:
                             self.printer.queue_add(log_string)
@@ -259,7 +271,7 @@ class RsyncMonitor:
 
 
 class FanMonitor:
-    def __init__(self, gpio_pin_low, gpio_pin_high, temp_fan_low=50, temp_fan_high=60, temp_fan_off=40,
+    def __init__(self, gpio_pin_low, gpio_pin_high, temp_fan_low=55, temp_fan_high=65, temp_fan_off=45,
                  min_seconds_on=30, log_queue=None, print_queue=None):
         self.rpi_cpu_freq = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq'
         self.fan_state = FAN_OFF
@@ -276,19 +288,18 @@ class FanMonitor:
 
         GPIO.setup(self.fan_pin_low, GPIO.OUT)
         GPIO.setup(self.fan_pin_high, GPIO.OUT)
-        self.set_state(False)
+        GPIO.output(self.fan_pin_low, False)
+        GPIO.output(self.fan_pin_high, False)
 
     @staticmethod
     def cpu_temp():
-        return float(re.sub('(temp=)|(\'C\n)', '', os.popen('vcgencmd measure_temp').readline()))
-        # return float(os.popen('vcgencmd measure_temp').readline().replace('temp=', '').replace('\'C\n', ''))
+        return float(os.popen('vcgencmd measure_temp').readline().replace('temp=', '').replace('\'C\n', ''))
 
     @staticmethod
     def cpu_percent():
         return float(psutil.cpu_percent(interval=1))
 
-    @staticmethod
-    def cpu_speed():
+    def cpu_speed(self):
         current_freq = str(subprocess.check_output('cat ' + self.rpi_cpu_freq, shell=True)).replace('0000\n', '')
 
         return \
@@ -309,7 +320,7 @@ class FanMonitor:
                                 .format(current_temp, self.cpu_percent(), self.cpu_speed())
 
                     if self.logger:
-                        self.logger.queue_add(log_write + '\n')
+                        self.logger.queue_add(log_write + '\r\n')
 
                     if self.printer:
                         self.printer.queue_add(log_write)
@@ -335,7 +346,7 @@ class FanMonitor:
                             .format(temp, current_temp, self.cpu_percent(), self.cpu_speed())
 
                 if self.logger:
-                    self.logger.queue_add(log_write + '\n')
+                    self.logger.queue_add(log_write + '\r\n')
 
                 if self.printer:
                     self.printer.queue_add(log_write)
@@ -352,7 +363,7 @@ class FanMonitor:
                                         self.cpu_speed())
 
                     if self.logger:
-                        self.logger.queue_add(log_write + '\n')
+                        self.logger.queue_add(log_write + '\r\n')
 
                     if self.printer:
                         self.printer.queue_add(log_write)
@@ -366,7 +377,7 @@ class FanMonitor:
                             .format(int(self.min_seconds_on - (current_time - self.__fan_timer)),
                                     current_temp, self.cpu_percent(), self.cpu_speed())
                 if self.logger:
-                    self.logger.queue_add(log_write + '\n')
+                    self.logger.queue_add(log_write + '\r\n')
 
                 if self.printer:
                     self.printer.queue_add(log_write)
@@ -378,7 +389,7 @@ class FanMonitor:
                     log_write = datetime.strftime(datetime.now(), '[%Y-%m-%d] [%H:%M:%S]') + \
                                 ' Min temp and time reached, turning fan off'
                     if self.logger:
-                        self.logger.queue_add(log_write + '\n')
+                        self.logger.queue_add(log_write + '\r\n')
 
                     if self.printer:
                         self.printer.queue_add(log_write)
@@ -406,7 +417,7 @@ def button_pressed(pin):
         if logger or printer:
             log_string = datetime.strftime(datetime.now(), '[%Y-%m-%d] [%H:%M:%S]') + ' Reset button pressed ....'
             if logger:
-                logger.queue_add(log_string + '\n')
+                logger.queue_add(log_string + '\r\n')
 
             if printer:
                 printer.queue_add(log_string)
@@ -420,7 +431,7 @@ def button_pressed(pin):
                     log_string = datetime.strftime(datetime.now(),
                                                    '[%Y-%m-%d] [%H:%M:%S]') + ' Shutting down PiStation 2'
                     if logger:
-                        logger.queue_add(log_string + '\n')
+                        logger.queue_add(log_string + '\r\n')
 
                     if printer:
                         printer.queue_add(log_string)
@@ -434,7 +445,7 @@ def button_pressed(pin):
         if logger or printer:
             log_string = datetime.strftime(datetime.now(), '[%Y-%m-%d] [%H:%M:%S]') + ' Restarting PiStation 2'
             if logger:
-                logger.queue_add(log_string + '\n')
+                logger.queue_add(log_string + '\r\n')
 
             if printer:
                 printer.queue_add(log_string)
@@ -446,29 +457,34 @@ def button_pressed(pin):
 def close():
     rsync_stop.set()
 
-    if logger:
-        logger.close()
+    try:
+        if logger:
+            logger.close()
+    except:
+        pass
 
-    if printer:
-        printer.close()
+    try:
+        if printer:
+            printer.close()
+    except:
+        pass
 
     GPIO.cleanup()
 
+logger = LogQueue()
+printer = None # PrintQueue()
 
 # Set the restart and shutdown pin
 # Enable the Pull Up resistor, allows us to turn the pi back on pressing
 # the reset/power button
 GPIO.setup(restart_shutdown_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-printer = PrintQueue()
-logger = LogQueue()
-
 GPIO.add_event_detect(restart_shutdown_pin, GPIO.BOTH, callback=button_pressed)
 
 rsync_stop = threading.Event()
 led_controller = LedController(front_led_pin)
-fan_monitor = FanMonitor(fan_pin_low, fan_pin_high, log_queue=logger, print_queue=printer)
-rsync_monitor = RsyncMonitor(led_controller, log_queue=logger, print_queue=printer)
+fan_monitor = FanMonitor(fan_pin_low, fan_pin_high, log_queue=logger)
+rsync_monitor = RsyncMonitor(led_controller, log_queue=logger)
 rsync_thread = threading.Thread(target=rsync_monitor.monitor, args=(rsync_stop,))
 rsync_thread.start()
 
@@ -476,7 +492,6 @@ try:
     while True:
         sleep(5)
         fan_monitor.check_temp()
-        print(fan_monitor.cpu_temp())
 
 except KeyboardInterrupt:
     print(datetime.strftime(datetime.now(), '[%Y-%m-%d] [%H:%M:%S]') + ' Keyboard interrupt')
